@@ -1,0 +1,556 @@
+# Carregando os pacotes
+library(pacman)
+pacman::p_load(tidyverse, readxl, corrplot, nortest, lmtest)
+
+
+# Leitura dos dados
+dados <- read_excel("desempenho por ano.xlsx", col_types = c("text", "text", rep("numeric", 26), "text", "text", 
+                                                               rep("numeric", 3),
+                                                               rep("text", 3)))
+
+cursos <- read_xls("cursos ate 2023.xls") %>% rename(COD_MATRICULA = Matrícula) %>% 
+  group_by(COD_MATRICULA, Sigla_Coord) %>% summarise()
+
+
+# reordenando
+dados <- dados[, c(names(dados[,1:2]),sort(names(dados[3:20])),sort(names(dados[21:27])),names(dados[,28:ncol(dados)]))]
+
+# Juntando os bancos
+dados <- left_join(dados, cursos[,c("COD_MATRICULA","Sigla_Coord")])
+
+
+
+## ----------- Análise dos Gestores ------------
+gestores <- dados %>% filter(Gestor == 1) 
+
+# Retirando gestores que não preencheram avaliação e/ou não realizaram treinamento
+
+# Comportamental
+#par(mar=c(5, 4, 4, 2) + 6,las = 2)
+#boxplot(gestores[3:26])
+
+#apply(gestores[3:26],2,shapiro.test) # TUDO ABERRAÇÃO
+
+#matriz_correlacao <- cor(gestores[3:26], method = "spearman", use = "pairwise.complete.obs")
+
+#corrplot(
+#  matriz_correlacao,
+#  method = "color"
+#)
+
+
+# Dados de todos os servidores ----
+
+# Matriz de correlação por variáveis
+matriz_correlacao <- cor(dados[3:26], method = "spearman", use = "pairwise.complete.obs")
+
+corrplot(
+  matriz_correlacao,
+  method = "color",
+  tl.col = "black"
+)
+
+
+# Ajustando os dados para gráficos de linhas
+dados_comp <- dados[,c(1,seq(3,20, by = 2),ncol(dados))]
+dados_resp <- dados[,c(1,seq(4,20,2),ncol(dados))]
+dados_horas <- dados[,c(1,21:27,ncol(dados))]
+
+dados_longos_comp <- pivot_longer(dados_comp, 
+                             cols = -c(COD_MATRICULA,Sigla_Coord),
+                             names_to = "Ano", 
+                             values_to = "valor") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")),
+         Tipo = "Comportamental") 
+
+dados_longos_resp <- pivot_longer(dados_resp, 
+                                  cols = -c(COD_MATRICULA,Sigla_Coord),
+                                  names_to = "Ano", 
+                                  values_to = "valor") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")),
+         Tipo = "Responsabilidade")
+
+dados_longos_horas <- pivot_longer(dados_horas, 
+                                  cols = -c(COD_MATRICULA,Sigla_Coord),
+                                  names_to = "Ano", 
+                                  values_to = "valor") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")),
+         Tipo = "HT")
+
+dados_longos <- full_join(dados_longos_comp,dados_longos_resp) %>% 
+  full_join(dados_longos_horas)
+
+dados_linhas <- dados_longos %>% group_by(Tipo,Ano) %>% summarise(media = mean(valor,na.rm = T))
+
+# Gráfico das médias das notas
+ggplot(dados_linhas[dados_linhas$Tipo != "HT",], aes(x = Ano, y = media, color = Tipo)) +
+  geom_line(size = 2) +
+  scale_color_manual(values = c("Comportamental" = "#00658A","Responsabilidade" = "#CE2424")) + 
+  labs(title = "Gráfico das médias das notas") +
+  theme_classic() 
+
+# Gráfico das médias das horas de treinamento
+ggplot(dados_linhas[dados_linhas$Tipo == "HT",], aes(x = Ano, y = media)) +
+  geom_line(size = 2, colour = "#004164") +
+  labs(title = "Gráfico das médias das horas de treinamento") + 
+  theme_classic() 
+
+# Gráfico das HT pelas notas
+dados_longos_comp2 <- pivot_longer(dados_comp, 
+                                  cols = -c(COD_MATRICULA,Sigla_Coord),
+                                  names_to = "Ano", 
+                                  values_to = "valor") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")),
+         Tipo = "Comportamental") 
+
+dados_longos_resp2 <- pivot_longer(dados_resp, 
+                                  cols = -c(COD_MATRICULA,Sigla_Coord),
+                                  names_to = "Ano", 
+                                  values_to = "valor") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")),
+         Tipo = "Responsabilidade")
+
+dados_longos_horas2 <- pivot_longer(dados_horas, 
+                                   cols = -c(COD_MATRICULA,Sigla_Coord),
+                                   names_to = "Ano", 
+                                   values_to = "HT") %>% 
+  mutate(Ano = as.numeric(str_extract(Ano, "\\d+")))
+
+
+dados_longos2 <- full_join(dados_longos_comp2,dados_longos_resp2) %>% 
+  full_join(dados_longos_horas2)
+
+
+ggplot(data = dados_longos2, aes(x= `HT`, y = `valor`, color = Tipo, shape = Tipo)) +
+  geom_point(alpha = 1, size = 1) + geom_smooth(method = "lm", se = FALSE) +
+  ylim(0,100) + xlim(0,750)
+
+
+# Teste de normalidade das notas
+ad.test(dados_longos$valor) # Geral (Não é normal)
+apply(dados[3:26],2,shapiro.test) # Por grupo (Nenhum normal)
+
+
+# Teste de diferença de médias
+wilcox.test(dados_longos2$valor~dados_longos2$Tipo) # médias diferentes (Resp>Comp)
+
+# Separar por unidades
+
+# Dados por unidade - Comportamental - 2023 ----
+(pessoas_unidades <- dados %>% group_by(Sigla_Coord) %>%
+  summarise(pessoas = n(), 
+            nota =  mean(`2023_Comportamental`, na.rm =T),
+            preenchimento = sum(ifelse(!is.na(`2023_Comportamental`) & !is.na(`2023_Horas_treinamento`), 1, 0))) %>% 
+  arrange(desc(pessoas))) 
+
+
+# Calculo da correlação por Unidade das Horas por Comportamental
+
+# vetor para a correlação
+pessoas_unidades$Correlação <- NA
+vetor_cor <- c()
+for (i in pessoas_unidades$Sigla_Coord){
+    teste <- dados[dados$Sigla_Coord == i,]
+    correla <- cor(teste$"2023_Horas_treinamento",teste$"2023_Comportamental", method = "spearman", use = "pairwise.complete.obs")
+    pessoas_unidades$Correlação[pessoas_unidades$Sigla_Coord == i] <- correla
+}
+
+pessoas_unidades
+
+# filtro de correlação forte: maior que abs(0.7) com preenchimento
+correl_forte <- pessoas_unidades %>%
+  filter(abs(Correlação) >= 0.7, preenchimento > 3)
+
+
+# fazendo a regressão entre nota e horas para cada unidade com correlação forte
+reg<- list()
+for( i in correl_forte$Sigla_Coord){
+  reg2 <- coef((lm(dados[dados$Sigla_Coord == i,]$"2023_Comportamental"~dados[dados$Sigla_Coord == i,]$"2023_Horas_treinamento")))
+  p_valor <- summary(lm(dados[dados$Sigla_Coord == i,]$"2023_Comportamental"~dados[dados$Sigla_Coord == i,]$"2023_Horas_treinamento"))
+  p_valores <- p_valor$coefficients[, "Pr(>|t|)"][2]
+  reg[[i]] <- list(reg2, p_valores) 
+}
+
+# Pegando p-valores das regressões
+segundos_componentes <- lapply(reg, function(objeto) objeto[2]) %>% 
+  unlist(segundos_componentes)
+
+# Filtrando p-valores significativos (10%)
+segundos_componentes[segundos_componentes <= 0.1 & !is.na(segundos_componentes)]
+
+# Gráfico das notas por hora de treinamento (comportamental 2023)
+dados2 <- dados %>% filter(Sigla_Coord %in% correl_forte$Sigla_Coord)
+
+ggplot(data = dados2, aes(x= `2023_Horas_treinamento`, y = `2023_Comportamental`, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord) 
+
+# comparando modelo de nota~hora e nota~hora+unidade
+mod <- lm(dados$"2023_Comportamental"~dados$"2023_Horas_treinamento")
+mod1 <- lm(dados$"2023_Comportamental"~dados$"2023_Horas_treinamento" + dados$Sigla_Coord)
+anova(mod,mod1) # como o p-valor < 0.05, aceita-se o mod1 como modelo.
+
+# Unidades que apresentaram significancia na regressão (nota explicada pelas horas)
+sum_mod1 <- summary(mod1)
+variaveis_sig <- sum_mod1$coefficients[, "Pr(>|t|)"][sum_mod1$coefficients[, "Pr(>|t|)"] <= 0.05]
+df_varsig <- data.frame("Sigla" = sub("dados\\$Sigla_Coord","",names(variaveis_sig)), "P-valor" = unname(variaveis_sig))
+
+dados2 <- dados %>% filter(Sigla_Coord %in% df_varsig$Sigla)
+
+ggplot(data = dados2, aes(x= `2023_Horas_treinamento`, y = `2023_Comportamental`, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord)
+
+
+
+# Dados por unidade - Comportamental - Geral ----
+
+dados_longos_comportamental <- dados_longos2 %>% filter(Tipo == "Comportamental")
+
+(pessoas_unidades <- dados_longos_comportamental %>% group_by(Sigla_Coord) %>%
+   summarise(pessoas = n(), 
+             nota =  mean(valor, na.rm =T),
+             preenchimento = sum(ifelse(!is.na(valor) & !is.na(HT), 1, 0))) %>% 
+   arrange(desc(pessoas))) 
+
+
+# Calculo da correlação por Unidade das Horas por Comportamental
+
+# vetor para a correlação
+pessoas_unidades$Correlação <- NA
+vetor_cor <- c()
+for (i in pessoas_unidades$Sigla_Coord){
+  teste <- dados_longos_comportamental[dados_longos_comportamental$Sigla_Coord == i,]
+  correla <- cor(teste$HT,teste$valor, method = "spearman", use = "pairwise.complete.obs")
+  pessoas_unidades$Correlação[pessoas_unidades$Sigla_Coord == i] <- correla
+}
+
+pessoas_unidades
+
+# filtro de correlação forte: maior que abs(0.7) com preenchimento
+correl_forte <- pessoas_unidades %>%
+  filter(abs(Correlação) >= 0.5, preenchimento > 3)
+
+
+# fazendo a regressão entre nota e horas para cada unidade com correlação forte
+reg<- list()
+for( i in correl_forte$Sigla_Coord){
+  reg2 <- coef((lm(dados_longos_comportamental[dados_longos_comportamental$Sigla_Coord == i,]$valor~dados_longos_comportamental[dados_longos_comportamental$Sigla_Coord == i,]$HT)))
+  p_valor <- summary(lm(dados_longos_comportamental[dados_longos_comportamental$Sigla_Coord == i,]$valor~dados_longos_comportamental[dados_longos_comportamental$Sigla_Coord == i,]$HT))
+  p_valores <- p_valor$coefficients[, "Pr(>|t|)"][2]
+  reg[[i]] <- list(reg2, p_valores) 
+}
+
+# Pegando p-valores das regressões
+segundos_componentes <- lapply(reg, function(objeto) objeto[2]) %>% 
+  unlist(segundos_componentes)
+
+# Filtrando p-valores significativos (10%)
+segundos_componentes[segundos_componentes <= 0.1 & !is.na(segundos_componentes)]
+
+# Gráfico das notas por hora de treinamento (comportamental geral)
+dados2 <- dados_longos_comportamental %>% filter(Sigla_Coord %in% correl_forte$Sigla_Coord)
+
+ggplot(data = dados2, aes(x= HT, y = valor, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord)
+
+# comparando modelo de nota~hora e nota~hora+unidade
+mod <- lm(dados_longos_comportamental$valor~dados_longos_comportamental$HT)
+mod1 <- lm(dados_longos_comportamental$valor~dados_longos_comportamental$HT + dados_longos_comportamental$Sigla_Coord)
+anova(mod,mod1) # como o p-valor < 0.05, aceita-se o mod1 como modelo.
+
+# Unidades que apresentaram significancia na regressão (nota explicada pelas horas)
+sum_mod1 <- summary(mod1)
+variaveis_sig <- sum_mod1$coefficients[, "Pr(>|t|)"][sum_mod1$coefficients[, "Pr(>|t|)"] <= 0.05]
+df_varsig <- data.frame("Sigla" = sub("dados_longos_comportamental\\$Sigla_Coord","",names(variaveis_sig)), "P-valor" = unname(variaveis_sig))
+
+
+# Gráfico das notas por hora de treinamento (comportamental geral)
+dados2 <- dados_longos_comportamental %>% filter(Sigla_Coord %in% df_varsig$Sigla)
+
+ggplot(data = dados2, aes(x= HT, y = valor, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord)
+
+
+
+
+
+
+
+
+# Dados por unidade - Responsabilidade - 2023 ----
+(pessoas_unidades <- dados %>% group_by(Sigla_Coord) %>%
+   summarise(pessoas = n(), 
+             nota =  mean(`2023_Responsabilidade`, na.rm =T),
+             preenchimento = sum(ifelse(!is.na(`2023_Responsabilidade`) & !is.na(`2023_Horas_treinamento`), 1, 0))) %>% 
+   arrange(desc(pessoas))) 
+
+
+# Calculo da correlação por Unidade das Horas por Responsabilidade
+
+# vetor para a correlação
+pessoas_unidades$Correlação <- NA
+vetor_cor <- c()
+for (i in pessoas_unidades$Sigla_Coord){
+  teste <- dados[dados$Sigla_Coord == i,]
+  correla <- cor(teste$"2023_Horas_treinamento",teste$"2023_Responsabilidade", method = "spearman", use = "pairwise.complete.obs")
+  pessoas_unidades$Correlação[pessoas_unidades$Sigla_Coord == i] <- correla
+}
+
+pessoas_unidades
+
+# filtro de correlação forte: maior que abs(0.7) com preenchimento
+correl_forte <- pessoas_unidades %>%
+  filter(abs(Correlação) >= 0.7, preenchimento > 3)
+
+
+# fazendo a regressão entre nota e horas para cada unidade com correlação forte
+reg<- list()
+for( i in correl_forte$Sigla_Coord){
+  reg2 <- coef((lm(dados[dados$Sigla_Coord == i,]$"2023_Responsabilidade"~dados[dados$Sigla_Coord == i,]$"2023_Horas_treinamento")))
+  p_valor <- summary(lm(dados[dados$Sigla_Coord == i,]$"2023_Responsabilidade"~dados[dados$Sigla_Coord == i,]$"2023_Horas_treinamento"))
+  p_valores <- p_valor$coefficients[, "Pr(>|t|)"][2]
+  reg[[i]] <- list(reg2, p_valores) 
+}
+
+# Pegando p-valores das regressões
+segundos_componentes <- lapply(reg, function(objeto) objeto[2]) %>% 
+  unlist(segundos_componentes)
+
+# Filtrando p-valores significativos (10%)
+segundos_componentes[segundos_componentes <= 0.1 & !is.na(segundos_componentes)]
+
+# Gráfico das notas por hora de treinamento (Responsabilidade 2023)
+dados2 <- dados %>% filter(Sigla_Coord %in% correl_forte$Sigla_Coord)
+
+ggplot(data = dados2, aes(x= `2023_Horas_treinamento`, y = `2023_Responsabilidade`, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord) 
+
+# comparando modelo de nota~hora e nota~hora+unidade
+mod <- lm(dados$"2023_Responsabilidade"~dados$"2023_Horas_treinamento")
+mod1 <- lm(dados$"2023_Responsabilidade"~dados$"2023_Horas_treinamento" + dados$Sigla_Coord)
+anova(mod,mod1) # como o p-valor < 0.05, aceita-se o mod1 como modelo.
+
+# Unidades que apresentaram significancia na regressão (nota explicada pelas horas)
+sum_mod1 <- summary(mod1)
+variaveis_sig <- sum_mod1$coefficients[, "Pr(>|t|)"][sum_mod1$coefficients[, "Pr(>|t|)"] <= 0.05]
+df_varsig <- data.frame("Sigla" = sub("dados\\$Sigla_Coord","",names(variaveis_sig)), "P-valor" = unname(variaveis_sig))
+
+dados2 <- dados %>% filter(Sigla_Coord %in% df_varsig$Sigla)
+
+ggplot(data = dados2, aes(x= `2023_Horas_treinamento`, y = `2023_Responsabilidade`, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord)
+
+
+# Dados por unidade - Responsabilidade - Geral ----
+
+dados_longos_Responsabilidade <- dados_longos2 %>% filter(Tipo == "Responsabilidade")
+
+(pessoas_unidades <- dados_longos_Responsabilidade %>% group_by(Sigla_Coord) %>%
+    summarise(pessoas = n(), 
+              nota =  mean(valor, na.rm =T),
+              preenchimento = sum(ifelse(!is.na(valor) & !is.na(HT), 1, 0))) %>% 
+    arrange(desc(pessoas))) 
+
+
+# Calculo da correlação por Unidade das Horas por Responsabilidade
+
+# vetor para a correlação
+pessoas_unidades$Correlação <- NA
+vetor_cor <- c()
+for (i in pessoas_unidades$Sigla_Coord){
+  teste <- dados_longos_Responsabilidade[dados_longos_Responsabilidade$Sigla_Coord == i,]
+  correla <- cor(teste$HT,teste$valor, method = "spearman", use = "pairwise.complete.obs")
+  pessoas_unidades$Correlação[pessoas_unidades$Sigla_Coord == i] <- correla
+}
+
+pessoas_unidades
+
+# filtro de correlação forte: maior que abs(0.7) com preenchimento
+correl_forte <- pessoas_unidades %>%
+  filter(abs(Correlação) >= 0.5, preenchimento > 3)
+
+
+# fazendo a regressão entre nota e horas para cada unidade com correlação forte
+reg<- list()
+for( i in correl_forte$Sigla_Coord){
+  reg2 <- coef((lm(dados_longos_Responsabilidade[dados_longos_Responsabilidade$Sigla_Coord == i,]$valor~dados_longos_Responsabilidade[dados_longos_Responsabilidade$Sigla_Coord == i,]$HT)))
+  p_valor <- summary(lm(dados_longos_Responsabilidade[dados_longos_Responsabilidade$Sigla_Coord == i,]$valor~dados_longos_Responsabilidade[dados_longos_Responsabilidade$Sigla_Coord == i,]$HT))
+  p_valores <- p_valor$coefficients[, "Pr(>|t|)"][2]
+  reg[[i]] <- list(reg2, p_valores) 
+}
+
+# Pegando p-valores das regressões
+segundos_componentes <- lapply(reg, function(objeto) objeto[2]) %>% 
+  unlist(segundos_componentes)
+
+# Filtrando p-valores significativos (10%)
+segundos_componentes[segundos_componentes <= 0.1 & !is.na(segundos_componentes)]
+
+# Gráfico das notas por hora de treinamento (Responsabilidade geral)
+dados2 <- dados_longos_Responsabilidade %>% filter(Sigla_Coord %in% correl_forte$Sigla_Coord)
+
+ggplot(data = dados2, aes(x= HT, y = valor, color = Sigla_Coord)) +
+  geom_point() +  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~Sigla_Coord)
+
+# comparando modelo de nota~hora e nota~hora+unidade
+mod <- lm(dados_longos_Responsabilidade$valor~dados_longos_Responsabilidade$HT)
+mod1 <- lm(dados_longos_Responsabilidade$valor~dados_longos_Responsabilidade$HT + dados_longos_Responsabilidade$Sigla_Coord)
+anova(mod,mod1) # como o p-valor < 0.05, aceita-se o mod1 como modelo.
+
+# Unidades que apresentaram significancia na regressão (nota explicada pelas horas)
+sum_mod1 <- summary(mod1)
+variaveis_sig <- sum_mod1$coefficients[, "Pr(>|t|)"][sum_mod1$coefficients[, "Pr(>|t|)"] <= 0.05]
+df_varsig <- data.frame("Sigla" = sub("dados_longos_Responsabilidade\\$Sigla_Coord","",names(variaveis_sig)), "P-valor" = unname(variaveis_sig))
+
+
+# Gráfico das notas por hora de treinamento (Responsabilidade geral)
+dados2 <- dados_longos %>% filter(Sigla_Coord %in% df_varsig$Sigla)
+
+
+# Análises
+
+nt_unidade <- dados_longos2 %>% group_by(Ano,Sigla_Coord,Tipo) %>%
+  summarise(nota = mean(valor, na.rm = T), horas = mean(HT, na.rm = T)) %>%
+  filter(horas != 0)
+
+nt_unidade_hrant <- dados_longos2 %>% group_by(Ano,Sigla_Coord,Tipo) %>%
+  summarise(nota = mean(valor, na.rm = T), horas = mean(HT, na.rm = T)) %>%
+  filter(horas != 0) %>% arrange(Sigla_Coord, Tipo,Ano)
+
+nt_unidade_hrant <- nt_unidade_hrant %>%
+  group_by(Tipo) %>%
+  mutate(horas_anterior = lag(horas), nota_anterior = lag(nota))
+
+# Tipo
+nt_resp <- nt_unidade_hrant %>% filter(Tipo == "Responsabilidade")
+nt_comp <- nt_unidade_hrant %>% filter(Tipo == "Comportamental")
+
+
+# Gráfico de disperção 
+
+# A1
+
+nt_resp %>% filter(Ano != 2017) %>% ggplot(aes(x = horas, y = nota)) +
+    geom_point(colour = "#004164") + 
+    labs(title = paste0("Responsabilidade"), 
+           x =  "Média das Horas de Treinamento", 
+           y = "Média das Notas") + 
+    geom_smooth(method = "lm",se = F, col = "red") +
+    facet_wrap(~Ano) +
+    theme_classic()
+
+
+nt_comp %>% filter(Ano != 2017) %>% ggplot(aes(x = horas, y = nota)) +
+  geom_point(colour = "#004164")+ 
+  labs(title = paste0("Comportamental"), 
+       x =  "Média das Horas de Treinamento", 
+       y = "Média das Notas") + 
+  geom_smooth(method = "lm",se = F, col = "red") +
+  facet_wrap(~Ano) +
+  theme_classic()
+
+
+
+# A2
+nt_resp %>% filter(Ano != 2017) %>% ggplot(aes(x = horas_anterior, y = nota)) +
+  geom_point(colour = "#004164") + 
+  labs(title = "Responsabilidade", 
+       x =  "Média das Horas de Treinamento do ano anterior", 
+       y = "Média das Notas") + 
+  geom_smooth(method = "lm",se = F, col = "red") +
+  facet_wrap(~Ano) +
+  theme_classic()
+
+
+nt_comp %>% filter(Ano != 2017) %>% ggplot(aes(x = horas_anterior, y = nota)) +
+  geom_point(colour = "#004164") + 
+  labs(title = "Comportamental", 
+       x =  "Média das Horas de Treinamento do ano anterior", 
+       y = "Média das Notas") + 
+  geom_smooth(method = "lm",se = F, col = "red") +
+  facet_wrap(~Ano) +
+  theme_classic()
+
+
+
+# A3
+nt_resp %>% filter(Ano != 2017) %>% ggplot(aes(x = nota, y = horas_anterior)) +
+  geom_point(colour = "#004164") + 
+  labs(title = "Responsabilidade", 
+       y =  "Média das Horas de Treinamento", 
+       x = "Média das Notas do ano anterior") + 
+  geom_smooth(method = "lm",se = F, col = "red") +
+  facet_wrap(~Ano) +
+  theme_classic()
+
+
+nt_comp %>% filter(Ano != 2017) %>% ggplot(aes(x = nota, y = horas_anterior)) +
+  geom_point(colour = "#004164") + 
+  labs(title = "Comportamental", 
+       y =  "Média das Horas de Treinamento", 
+       x = "Média das Notas do ano anterior") + 
+  geom_smooth(method = "lm",se = F, col = "red") +
+  facet_wrap(~Ano) +
+  theme_classic()
+
+# Modelos
+mod_resp_A1 <- list()
+mod_comp_A1 <- list()
+mod_resp_A2 <- list()
+mod_comp_A2 <- list()
+mod_resp_A3 <- list()
+mod_comp_A3 <- list()
+
+
+
+k = 1
+for(i in 2017:2023){
+  mod_resp_A1[[k]] <- lm(nt_resp$nota[nt_resp$Ano == i]~nt_resp$horas[nt_resp$Ano == i])
+  mod_comp_A1[[k]] <- lm(nt_comp$nota[nt_comp$Ano == i]~nt_comp$horas[nt_comp$Ano == i])
+  
+  mod_resp_A2[[k]] <- lm(nt_resp$nota[nt_resp$Ano == i]~nt_resp$horas_anterior[nt_resp$Ano == i])
+  mod_comp_A2[[k]] <- lm(nt_comp$nota[nt_comp$Ano == i]~nt_comp$horas_anterior[nt_comp$Ano == i])
+  
+  mod_resp_A3[[k]] <- lm(nt_resp$horas[nt_resp$Ano == i]~nt_resp$nota_anterior[nt_resp$Ano == i])
+  mod_comp_A3[[k]] <- lm(nt_comp$horas[nt_comp$Ano == i]~nt_comp$nota_anterior[nt_comp$Ano == i])
+  k <- k+1
+}
+
+
+names(mod_resp_A1) <- names(mod_comp_A1) <- names(mod_resp_A2) <- names(mod_comp_A2) <- names(mod_resp_A3) <- names(mod_comp_A3) <- c(2017:2023)
+
+# Construa o gráfico
+
+mod_sig <- list(mod_comp_A1$`2018`,mod_comp_A1$`2019`,mod_resp_A1$`2018`,mod_resp_A1$`2019`,
+                mod_comp_A2$`2019`,mod_resp_A2$`2019`,mod_resp_A2$`2022`,
+                mod_resp_A3$`2019`,mod_resp_A3$`2020`)
+
+# Normalidade
+
+lapply(mod_sig,summary)
+
+lapply(mod_sig,function(a){
+  shapiro.test(residuals(a))
+})
+
+lapply(mod_sig,bptest)
+par(mfrow = c(2,2))
+plot(mod_sig[[7]])
+
+
+summary(mod_sig[[7]])
+
+
+
+
+
+
+
+
+
